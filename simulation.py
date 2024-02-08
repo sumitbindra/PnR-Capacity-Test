@@ -12,7 +12,7 @@ parking_lots = len(lot_capacities)
 min_costs = np.array([2, 2, 2])  # Minimum cost for parking at each lot
 cost_increase_factor = 0.8
 cost_decrease_factor = 1
-fixed_driving_cost = 5  # Fixed cost to drive
+fixed_driving_cost = np.array([[5, 4, 6, 3, 7]])  # Fixed cost to drive from each zone
 max_cost = 50  # Max cost to avoid a shadow price that's too high
 cost_coeff = -0.05
 mode_choice_temperature = 2
@@ -40,22 +40,24 @@ for i in range(n_zones):
     probabilities[i, :] = random_initial_probabilities(i, parking_lots)
 
 
-def update_probabilities(costs, fixed_driving_cost, probabilities, lot_capacity, total_demand):
+def update_probabilities(costs, probabilities, lot_capacity, total_demand):
     new_probabilities = np.zeros_like(probabilities)
     utilization = total_demand / lot_capacity
 
     util_allmode = [0] * 5
     util_PNR_bestLot = [0] * 5
-    lot_util = costs[:,:-1] * cost_coeff
-    util_allmode = costs[:,-1] *cost_coeff
-    util_PNR_bestLot = (costs[:,:-1].min(axis=1)+10) * cost_coeff
-    x = np.array([util_PNR_bestLot,util_allmode])*mode_choice_temperature
+    lot_util = costs[:, :-1] * cost_coeff
+    util_allmode = costs[:, -1] * cost_coeff
+    util_PNR_bestLot = (costs[:, :-1].min(axis=1) + 10) * cost_coeff
+    x = np.array([util_PNR_bestLot, util_allmode]) * mode_choice_temperature
     # calculate driving probability
-    new_probabilities[:,-1] = softmax(x, axis=0).T[:,-1]
+    new_probabilities[:, -1] = softmax(x, axis=0).T[:, -1]
     # calculate lot probability based on costs
-    new_probabilities[:,:-1] = softmax(lot_util * lot_choice_temperature, axis=1)
+    new_probabilities[:, :-1] = softmax(lot_util * lot_choice_temperature, axis=1)
     # scale lot probability
-    new_probabilities[:,:-1] = new_probabilities[:,:-1] * (1-new_probabilities[:,-1])[:, None]
+    new_probabilities[:, :-1] = (
+        new_probabilities[:, :-1] * (1 - new_probabilities[:, -1])[:, None]
+    )
     return new_probabilities
 
 
@@ -64,8 +66,7 @@ def initialize_costs(n_zones, n_parking_lots, min_costs, fixed_driving_cost):
     # Generate initial costs based on min_costs, adding randomness
     initial_costs = np.random.rand(n_zones, n_parking_lots) + min_costs
     # Append a column with fixed driving cost for each zone
-    driving_costs = np.array([[5, 4, 6, 3, 7]]).T
-    initial_costs = np.append(initial_costs, driving_costs, axis=1)
+    initial_costs = np.append(initial_costs, fixed_driving_cost.T, axis=1)
     # print(f"Initial costs: \n {initial_costs}")
     return initial_costs
 
@@ -92,7 +93,8 @@ def update_costs(
         if utilization[lot] > 1:
             # Demand exceeds capacity, increase cost
             adjustment_factor = (
-                np.exp(cost_increase_factor * utilization[lot]) - np.exp(cost_increase_factor)
+                np.exp(cost_increase_factor * utilization[lot])
+                - np.exp(cost_increase_factor)
             ) * cost_decrease_factor  # (utilization[lot] - 1) * cost_increase_factor
         # elif utilization[lot] < 0.5:
         #    # If the lot is less than 50% full, make parking a lot more attractive by reducing cost significantly
@@ -100,14 +102,17 @@ def update_costs(
         else:
             # Demand is below capacity, decrease cost to encourage more parking
             adjustment_factor = (
-                np.exp(cost_increase_factor * utilization[lot]) - np.exp(cost_increase_factor)
+                np.exp(cost_increase_factor * utilization[lot])
+                - np.exp(cost_increase_factor)
             ) * cost_decrease_factor  # (utilization[lot] - 1) * cost_decrease_factor
 
         # Apply adjustment factor to parking costs, not affecting the fixed driving cost
-        new_costs[:, lot] = np.clip(costs[:, lot] + adjustment_factor, min_costs[lot], max_cost)
+        new_costs[:, lot] = np.clip(
+            costs[:, lot] + adjustment_factor, min_costs[lot], max_cost
+        )
 
-    # Ensure driving cost remains constant across all zones
-    # new_costs[:, -1] = fixed_driving_cost
+    # Ensure driving cost remains unchainged fixed after these calculations
+    new_costs[:, -1] = fixed_driving_cost
 
     # Round the costs to 2 decimal places for clarity
     new_costs = np.round(new_costs, 2)
@@ -123,18 +128,23 @@ def update_costs(
 
 # Additional code for visualization
 utilization_history = np.zeros((n_iterations, parking_lots))
-cost_history = np.zeros((n_iterations, parking_lots))  # Store only parking costs for simplicity
+cost_history = np.zeros(
+    (n_iterations, parking_lots)
+)  # Store only parking costs for simplicity
 demand_history = np.zeros((n_iterations, parking_lots))
 drive_vs_park = np.zeros((n_iterations, 2))
 
 for iteration in range(n_iterations):
     total_demand = np.zeros(parking_lots)
     zone_demand = np.zeros(
-        (n_zones, parking_lots))  # Demand from each zone for each parking lot
+        (n_zones, parking_lots)
+    )  # Demand from each zone for each parking lot
 
     for zone in range(n_zones):
         zone_probabilities = probabilities[zone, :-1]  # Exclude driving probability
-        zone_demand[zone, :] = np.random.binomial(trips_per_zone[zone], zone_probabilities)
+        zone_demand[zone, :] = np.random.binomial(
+            trips_per_zone[zone], zone_probabilities
+        )
         total_demand += zone_demand[zone, :]
 
     print(f"Zone demand after iteration {iteration+1} : \n {np.round(zone_demand,0)}")
@@ -153,15 +163,17 @@ for iteration in range(n_iterations):
     )
 
     # Update probabilities based on the new costs and demand
-    probabilities = update_probabilities(costs, fixed_driving_cost, probabilities,
-                                         lot_capacities, total_demand)
+    probabilities = update_probabilities(
+        costs, probabilities, lot_capacities, total_demand
+    )
 
     # Calculate utilization for visualization
     drive_vs_park[iteration, 0] = total_trips - np.sum(zone_demand)  # Those who drive
     drive_vs_park[iteration, 1] = np.sum(zone_demand)  # Those who park
     utilization_history[iteration] = total_demand / lot_capacities
     cost_history[iteration] = costs[:, :-1].mean(
-        axis=0)  # Average cost per lot, excluding driving
+        axis=0
+    )  # Average cost per lot, excluding driving
 
 # Chart 1: Utilization, Demand, and Parking Cost for Each Lot by Iteration
 for lot in range(parking_lots):
